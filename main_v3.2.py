@@ -312,7 +312,7 @@ class GameState:
         return True
 
     def find_clear_angle(self, from_id, to_id, travel_time, ships):
-        """FIX 6: Try base angle, then small offsets to route around blockers."""
+        """Try base angle first (must be 0.0 since fleets fly in straight lines)."""
         for offset in [0.0]:
             if self.is_path_clear(from_id, to_id, travel_time, ships, angle_offset=offset):
                 target_pos = self.predict_planet_pos(to_id, self.step + travel_time)
