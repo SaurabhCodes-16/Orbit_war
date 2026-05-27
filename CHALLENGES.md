@@ -4,7 +4,7 @@ Developing a top-tier continuous-space agent for **Orbit Wars** came with major 
 
 ---
 
-## 💥 Challenge 1: The Coordinated Offense "Defeat in Detail" Fiasco
+##  Challenge 1: The Coordinated Offense "Defeat in Detail" Fiasco
 
 ### The Problem:
 In `v3.1`, we attempted to enable "coordinated attacks" for offense: if a single planet did not have enough ships to capture a target, it would launch a smaller fleet anyway, hoping other planets would contribute.
@@ -15,7 +15,7 @@ We strictly restored the **concentrated force principle** for offense. The agent
 
 ---
 
-## ⌛ Challenge 2: Early-Game Stifling via Static Reserves
+##  Challenge 2: Early-Game Stifling via Static Reserves
 
 ### The Problem:
 To protect planets against surprise enemy snipes, we originally enforced a static reserve limit (`MIN_RESERVE = 8`) on all owned systems.
@@ -26,7 +26,7 @@ We engineered **dynamic reserve scaling**. Reserves are set to **0 in the first 
 
 ---
 
-## 💸 Challenge 3: Resource Waste in Neutral Colonization
+##  Challenge 3: Resource Waste in Neutral Colonization
 
 ### The Problem:
 To ensure our attacks on enemy systems were strong enough to withstand incoming enemy reinforcements, we used a minimum attack size floor (`MIN_ATTACK_BATCH = 15`).
@@ -39,7 +39,7 @@ We implemented **dynamic attack-size scaling** based on target ownership:
 
 ---
 
-## ⚙️ Challenge 4: Garrison Simulation Order Mismatch
+##  Challenge 4: Garrison Simulation Order Mismatch
 
 ### The Problem:
 In the early versions of our garrison simulation, the order of events calculated production *before* resolving incoming fleet combat.
@@ -54,7 +54,7 @@ This 100% physics alignment resulted in flawless predictive accuracy.
 
 ---
 
-## 👁️ Challenge 5: Travel Distance Blindness on 4-Player Maps
+##  Challenge 5: Travel Distance Blindness on 4-Player Maps
 
 ### The Problem:
 Our consistent-speed search was originally capped at a search range of 60 steps (`for dt in range(1, 60)`).
