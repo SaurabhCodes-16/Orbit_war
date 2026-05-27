@@ -93,6 +93,17 @@ class GameState:
                     self.comet_paths[pid] = (paths[i], path_idx)
 
     def predict_planet_pos(self, planet_id, step):
+        """Predicts the coordinates of a planet (static, orbiting, or comet) at a future step, using a cache."""
+        if not hasattr(self, '_pos_cache'):
+            self._pos_cache = {}
+        key = (planet_id, step)
+        if key in self._pos_cache:
+            return self._pos_cache[key]
+        res = self._predict_planet_pos_uncached(planet_id, step)
+        self._pos_cache[key] = res
+        return res
+
+    def _predict_planet_pos_uncached(self, planet_id, step):
         """Predicts the coordinates of a planet (static, orbiting, or comet) at a future step."""
         # If it's a comet
         if planet_id in self.comet_ids:
@@ -197,10 +208,76 @@ class GameState:
 
         return arrivals
 
+    def precompute_garrison_timelines(self, arrivals_map, horizon=65):
+        """Precompute future owners and ships for all planets up to horizon steps."""
+        self.garrison_cache = {}
+        for planet in self.planets:
+            timeline = []  # list of (owner, ships) indexed by dt (from 0 to horizon)
+            current_owner = planet.owner
+            current_ships = planet.ships
+            prod = planet.production
+            
+            incoming = list(arrivals_map.get(planet.id, []))
+            
+            # Pre-group fleets by step for O(1) lookup
+            fleets_by_step = {}
+            for f in incoming:
+                step = f[0]
+                fleets_by_step.setdefault(step, []).append(f)
+                
+            # Step 0 is the current step
+            timeline.append((current_owner, current_ships))
+            
+            for dt in range(1, horizon + 1):
+                step = self.step + dt
+                if planet.id in self.comet_ids and self.predict_planet_pos(planet.id, step) is None:
+                    # Comet expired
+                    timeline.append((-1, 0))
+                    current_owner, current_ships = -1, 0
+                    continue
+                    
+                fleets_this_step = fleets_by_step.get(step, [])
+                if fleets_this_step:
+                    player_ships = {}
+                    for _, f_owner, f_ships in fleets_this_step:
+                        player_ships[f_owner] = player_ships.get(f_owner, 0) + f_ships
+                    sorted_players = sorted(player_ships.items(), key=lambda x: x[1], reverse=True)
+                    top_player, top_ships = sorted_players[0]
+                    if len(sorted_players) > 1:
+                        second_ships = sorted_players[1][1]
+                        if top_ships == second_ships:
+                            survivor_ships = 0
+                            survivor_owner = -1
+                        else:
+                            survivor_ships = top_ships - second_ships
+                            survivor_owner = top_player
+                    else:
+                        survivor_owner = top_player
+                        survivor_ships = top_ships
+                    if survivor_ships > 0:
+                        if current_owner == survivor_owner:
+                            current_ships += survivor_ships
+                        else:
+                            current_ships -= survivor_ships
+                            if current_ships < 0:
+                                current_owner = survivor_owner
+                                current_ships = abs(current_ships)
+                    
+                if current_owner != -1:
+                    current_ships += prod
+                    
+                timeline.append((current_owner, current_ships))
+            self.garrison_cache[planet.id] = timeline
+
     def simulate_future_garrison(self, planet_id, target_step, arrivals_map, extra_arrivals=None):
-        """Predict owner and ships at target_step, applying combat before production.
-        extra_arrivals: optional list of (step, owner, ships) to include for planned launches.
-        """
+        """Predict owner and ships at target_step, using precomputed timeline if possible."""
+        dt = target_step - self.step
+        if not extra_arrivals and hasattr(self, 'garrison_cache') and planet_id in self.garrison_cache:
+            timeline = self.garrison_cache[planet_id]
+            if 0 <= dt < len(timeline):
+                return timeline[dt]
+
+        # Fallback to dynamic simulation if extra_arrivals are present or dt is out of range
         planet = self.planet_by_id.get(planet_id)
         if planet is None:
             return -1, 0
@@ -212,14 +289,16 @@ class GameState:
         if extra_arrivals:
             incoming.extend(extra_arrivals)
 
-        for step in range(self.step + 1, target_step + 1):
-            # 1. Comet expiration
-            if planet_id in self.comet_ids:
-                if self.predict_planet_pos(planet_id, step) is None:
-                    return -1, 0
+        # Pre-group for speed in dynamic fallback
+        fleets_by_step = {}
+        for f in incoming:
+            fleets_by_step.setdefault(f[0], []).append(f)
 
-            # 2. Combat resolution (before production)
-            fleets_this_step = [f for f in incoming if f[0] == step]
+        for step in range(self.step + 1, target_step + 1):
+            if planet_id in self.comet_ids and self.predict_planet_pos(planet_id, step) is None:
+                return -1, 0
+
+            fleets_this_step = fleets_by_step.get(step, [])
             if fleets_this_step:
                 player_ships = {}
                 for _, f_owner, f_ships in fleets_this_step:
@@ -246,7 +325,6 @@ class GameState:
                             current_owner = survivor_owner
                             current_ships = abs(current_ships)
 
-            # 3. Production (after combat)
             if current_owner != -1:
                 current_ships += prod
 
@@ -299,6 +377,7 @@ class GameState:
 def agent(obs):
     state = GameState(obs)
     arrivals = state.analyze_active_fleets()
+    state.precompute_garrison_timelines(arrivals, horizon=65)
 
     # 1. Coordinate Defense
     defense_needs = {}

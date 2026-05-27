@@ -105,6 +105,17 @@ class GameState:
         self.effective_reserve = 0 if (self.step < 130 or self.endgame) else MIN_RESERVE
 
     def predict_planet_pos(self, planet_id, step):
+        """Predict planet/comet position at an absolute future step, using a local cache."""
+        if not hasattr(self, '_pos_cache'):
+            self._pos_cache = {}
+        key = (planet_id, step)
+        if key in self._pos_cache:
+            return self._pos_cache[key]
+        res = self._predict_planet_pos_uncached(planet_id, step)
+        self._pos_cache[key] = res
+        return res
+
+    def _predict_planet_pos_uncached(self, planet_id, step):
         """Predict planet/comet position at an absolute future step."""
         if planet_id in self.comet_ids:
             if planet_id not in self.comet_paths:
@@ -235,8 +246,56 @@ class GameState:
             return -1, 0
         return current_owner, current_ships - survivor_ships
 
+    def precompute_garrison_timelines(self, arrivals_map, horizon=65):
+        """Precompute future owners and ships for all planets up to horizon steps."""
+        self.garrison_cache = {}
+        for planet in self.planets:
+            timeline = []  # list of (owner, ships) indexed by dt (from 0 to horizon)
+            current_owner = planet.owner
+            current_ships = planet.ships
+            prod = planet.production
+            
+            incoming = list(arrivals_map.get(planet.id, []))
+            
+            # Pre-group fleets by step for O(1) lookup
+            fleets_by_step = {}
+            for f in incoming:
+                step = f[0]
+                fleets_by_step.setdefault(step, []).append(f)
+                
+            # Step 0 is the current step
+            timeline.append((current_owner, current_ships))
+            
+            for dt in range(1, horizon + 1):
+                step = self.step + dt
+                if planet.id in self.comet_ids and self.predict_planet_pos(planet.id, step) is None:
+                    # Comet expired
+                    timeline.append((-1, 0))
+                    current_owner, current_ships = -1, 0
+                    continue
+                    
+                fleets_this_step = fleets_by_step.get(step, [])
+                if fleets_this_step:
+                    fleet_forces = {}
+                    for _, f_owner, f_ships in fleets_this_step:
+                        fleet_forces[f_owner] = fleet_forces.get(f_owner, 0) + f_ships
+                    current_owner, current_ships = self.resolve_combat(current_owner, current_ships, fleet_forces)
+                    
+                if current_owner != -1:
+                    current_ships += prod
+                    
+                timeline.append((current_owner, current_ships))
+            self.garrison_cache[planet.id] = timeline
+
     def simulate_future_garrison(self, planet_id, target_step, arrivals_map, extra_arrivals=None):
-        """Predict owner and ships at target_step, applying combat before production."""
+        """Predict owner and ships at target_step, using precomputed timeline if possible."""
+        dt = target_step - self.step
+        if not extra_arrivals and hasattr(self, 'garrison_cache') and planet_id in self.garrison_cache:
+            timeline = self.garrison_cache[planet_id]
+            if 0 <= dt < len(timeline):
+                return timeline[dt]
+
+        # Fallback to dynamic simulation if extra_arrivals are present or dt is out of range
         planet = self.planet_by_id.get(planet_id)
         if planet is None:
             return -1, 0
@@ -248,19 +307,22 @@ class GameState:
         if extra_arrivals:
             incoming.extend(extra_arrivals)
 
+        # Pre-group for speed in dynamic fallback
+        fleets_by_step = {}
+        for f in incoming:
+            fleets_by_step.setdefault(f[0], []).append(f)
+
         for step in range(self.step + 1, target_step + 1):
             if planet_id in self.comet_ids and self.predict_planet_pos(planet_id, step) is None:
                 return -1, 0
 
-            # 1. Combat resolution (before production)
-            fleets_this_step = [f for f in incoming if f[0] == step]
+            fleets_this_step = fleets_by_step.get(step, [])
             if fleets_this_step:
                 fleet_forces = {}
                 for _, f_owner, f_ships in fleets_this_step:
                     fleet_forces[f_owner] = fleet_forces.get(f_owner, 0) + f_ships
                 current_owner, current_ships = self.resolve_combat(current_owner, current_ships, fleet_forces)
 
-            # 2. Production (after combat)
             if current_owner != -1:
                 current_ships += prod
 
@@ -344,6 +406,7 @@ class GameState:
 def agent(obs):
     state = GameState(obs)
     arrivals = state.analyze_active_fleets()
+    state.precompute_garrison_timelines(arrivals, horizon=65)
 
     my_planets = [p for p in state.planets if p.owner == state.player]
     if not my_planets:
